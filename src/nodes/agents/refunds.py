@@ -43,56 +43,40 @@ def find_refunds_missing_in_ar_or_gl(
     rows = conn.execute(
         """
         SELECT
-            refund_id,
-            loan_id,
-            refund_date,
-            refund_amount,
-            refund_reason
-        FROM refunds
-        WHERE refund_date >= ?
-          AND refund_date < ?
+            r.refund_id,
+            r.loan_id,
+            r.refund_date,
+            r.refund_amount,
+            r.refund_reason,
+            CASE WHEN ar.reference_id IS NOT NULL THEN 1 ELSE 0 END AS ar_exists,
+            CASE WHEN gl.reference_id IS NOT NULL THEN 1 ELSE 0 END AS gl_exists
+        FROM refunds r
+        LEFT JOIN ar_subledger ar
+            ON ar.reference_id = r.refund_id
+           AND ar.reference_type = 'REFUND'
+           AND ar.transaction_type = 'REFUND_APPLIED'
+        LEFT JOIN gl_journal_entries gl
+            ON gl.reference_id = r.refund_id
+           AND gl.reference_type = 'REFUND'
+           AND gl.entry_type = 'REFUND_CREDIT'
+        WHERE r.refund_date >= ?
+          AND r.refund_date < ?
+          AND NOT (ar.reference_id IS NOT NULL AND gl.reference_id IS NOT NULL)
         """,
         (period_start, next_month),
     ).fetchall()
 
     findings: List[RefundFinding] = []
     for row in rows:
-        rid = row["refund_id"]
-
-        ar_exists = conn.execute(
-            """
-            SELECT 1 FROM ar_subledger
-            WHERE reference_id = ?
-              AND reference_type = 'REFUND'
-              AND transaction_type = 'REFUND_APPLIED'
-            LIMIT 1
-            """,
-            (rid,),
-        ).fetchone() is not None
-
-        gl_exists = conn.execute(
-            """
-            SELECT 1 FROM gl_journal_entries
-            WHERE reference_id = ?
-              AND reference_type = 'REFUND'
-              AND entry_type = 'REFUND_CREDIT'
-            LIMIT 1
-            """,
-            (rid,),
-        ).fetchone() is not None
-
-        if ar_exists and gl_exists:
-            continue  # fully reconciled
-
         findings.append(
             RefundFinding(
-                refund_id=rid,
+                refund_id=row["refund_id"],
                 loan_id=row["loan_id"],
                 refund_date=row["refund_date"],
                 refund_amount=float(row["refund_amount"]),
                 refund_reason=row["refund_reason"],
-                missing_in_ar=not ar_exists,
-                missing_in_gl=not gl_exists,
+                missing_in_ar=not row["ar_exists"],
+                missing_in_gl=not row["gl_exists"],
             )
         )
     return findings

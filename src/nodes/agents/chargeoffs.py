@@ -45,60 +45,44 @@ def find_chargeoffs_missing_in_ar_or_gl(
     rows = conn.execute(
         """
         SELECT
-            charge_off_id,
-            loan_id,
-            charge_off_date,
-            charge_off_amount,
-            days_past_due,
-            status
-        FROM charge_offs
-        WHERE charge_off_date >= ?
-          AND charge_off_date < ?
-          AND days_past_due >= 90
-          AND status = 'CONFIRMED'
+            co.charge_off_id,
+            co.loan_id,
+            co.charge_off_date,
+            co.charge_off_amount,
+            co.days_past_due,
+            co.status,
+            CASE WHEN ar.reference_id IS NOT NULL THEN 1 ELSE 0 END AS ar_exists,
+            CASE WHEN gl.reference_id IS NOT NULL THEN 1 ELSE 0 END AS gl_exists
+        FROM charge_offs co
+        LEFT JOIN ar_subledger ar
+            ON ar.reference_id = co.charge_off_id
+           AND ar.reference_type = 'CHARGE_OFF'
+           AND ar.transaction_type = 'CHARGE_OFF_CLEARANCE'
+        LEFT JOIN gl_journal_entries gl
+            ON gl.reference_id = co.charge_off_id
+           AND gl.reference_type = 'CHARGE_OFF'
+           AND gl.entry_type = 'CHARGE_OFF_WRITE_OFF'
+        WHERE co.charge_off_date >= ?
+          AND co.charge_off_date < ?
+          AND co.days_past_due >= 90
+          AND co.status = 'CONFIRMED'
+          AND NOT (ar.reference_id IS NOT NULL AND gl.reference_id IS NOT NULL)
         """,
         (period_start, next_month),
     ).fetchall()
 
     findings: List[ChargeOffFinding] = []
     for row in rows:
-        cid = row["charge_off_id"]
-
-        ar_exists = conn.execute(
-            """
-            SELECT 1 FROM ar_subledger
-            WHERE reference_id = ?
-              AND reference_type = 'CHARGE_OFF'
-              AND transaction_type = 'CHARGE_OFF_CLEARANCE'
-            LIMIT 1
-            """,
-            (cid,),
-        ).fetchone() is not None
-
-        gl_exists = conn.execute(
-            """
-            SELECT 1 FROM gl_journal_entries
-            WHERE reference_id = ?
-              AND reference_type = 'CHARGE_OFF'
-              AND entry_type = 'CHARGE_OFF_WRITE_OFF'
-            LIMIT 1
-            """,
-            (cid,),
-        ).fetchone() is not None
-
-        if ar_exists and gl_exists:
-            continue  # fully reconciled
-
         findings.append(
             ChargeOffFinding(
-                charge_off_id=cid,
+                charge_off_id=row["charge_off_id"],
                 loan_id=row["loan_id"],
                 charge_off_date=row["charge_off_date"],
                 charge_off_amount=float(row["charge_off_amount"]),
                 days_past_due=int(row["days_past_due"]),
                 status=row["status"],
-                missing_in_ar=not ar_exists,
-                missing_in_gl=not gl_exists,
+                missing_in_ar=not row["ar_exists"],
+                missing_in_gl=not row["gl_exists"],
             )
         )
     return findings

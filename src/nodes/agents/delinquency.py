@@ -42,58 +42,42 @@ def find_fees_missing_in_ar_or_gl(
     rows = conn.execute(
         """
         SELECT
-            fee_id,
-            loan_id,
-            fee_date,
-            fee_amount,
-            fee_type,
-            days_past_due
-        FROM delinquency_fees
-        WHERE fee_date >= ?
-          AND fee_date < ?
+            df.fee_id,
+            df.loan_id,
+            df.fee_date,
+            df.fee_amount,
+            df.fee_type,
+            df.days_past_due,
+            CASE WHEN ar.reference_id IS NOT NULL THEN 1 ELSE 0 END AS ar_exists,
+            CASE WHEN gl.reference_id IS NOT NULL THEN 1 ELSE 0 END AS gl_exists
+        FROM delinquency_fees df
+        LEFT JOIN ar_subledger ar
+            ON ar.reference_id = df.fee_id
+           AND ar.reference_type = 'FEE'
+           AND ar.transaction_type = 'FEE_CHARGE'
+        LEFT JOIN gl_journal_entries gl
+            ON gl.reference_id = df.fee_id
+           AND gl.reference_type = 'FEE'
+           AND gl.entry_type = 'FEE_POSTING'
+        WHERE df.fee_date >= ?
+          AND df.fee_date < ?
+          AND NOT (ar.reference_id IS NOT NULL AND gl.reference_id IS NOT NULL)
         """,
         (period_start, next_month),
     ).fetchall()
 
     findings: List[DelinquencyFinding] = []
     for row in rows:
-        fid = row["fee_id"]
-
-        ar_exists = conn.execute(
-            """
-            SELECT 1 FROM ar_subledger
-            WHERE reference_id = ?
-              AND reference_type = 'FEE'
-              AND transaction_type = 'FEE_CHARGE'
-            LIMIT 1
-            """,
-            (fid,),
-        ).fetchone() is not None
-
-        gl_exists = conn.execute(
-            """
-            SELECT 1 FROM gl_journal_entries
-            WHERE reference_id = ?
-              AND reference_type = 'FEE'
-              AND entry_type = 'FEE_POSTING'
-            LIMIT 1
-            """,
-            (fid,),
-        ).fetchone() is not None
-
-        if ar_exists and gl_exists:
-            continue  # fully reconciled
-
         findings.append(
             DelinquencyFinding(
-                fee_id=fid,
+                fee_id=row["fee_id"],
                 loan_id=row["loan_id"],
                 fee_date=row["fee_date"],
                 fee_amount=float(row["fee_amount"]),
                 fee_type=row["fee_type"],
                 days_past_due=int(row["days_past_due"]),
-                missing_in_ar=not ar_exists,
-                missing_in_gl=not gl_exists,
+                missing_in_ar=not row["ar_exists"],
+                missing_in_gl=not row["gl_exists"],
             )
         )
     return findings

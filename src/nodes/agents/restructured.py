@@ -49,56 +49,38 @@ def find_restructures_removed_from_period(
             rp.original_due_date,
             rp.restructured_due_date,
             rp.original_amount,
-            rp.restructured_amount
+            rp.restructured_amount,
+            CASE WHEN ar.reference_id IS NOT NULL THEN 1 ELSE 0 END AS ar_exists,
+            CASE WHEN gl.reference_id IS NOT NULL THEN 1 ELSE 0 END AS gl_exists
         FROM restructured_payments rp
+        LEFT JOIN ar_subledger ar
+            ON ar.reference_id = rp.restructure_id
+           AND ar.reference_type = 'RESTRUCTURE'
+           AND ar.transaction_type = 'RESTRUCTURE_REVERSAL'
+        LEFT JOIN gl_journal_entries gl
+            ON gl.reference_id = rp.restructure_id
+           AND gl.reference_type = 'RESTRUCTURE'
+           AND gl.entry_type = 'RESTRUCTURE_REVERSAL'
         WHERE rp.original_due_date >= ?
           AND rp.original_due_date < ?
           AND (rp.restructured_due_date < ? OR rp.restructured_due_date >= ?)
+          AND NOT (ar.reference_id IS NOT NULL AND gl.reference_id IS NOT NULL)
         """,
         (period_start, next_month, period_start, next_month),
     ).fetchall()
 
     findings: List[RestructuredFinding] = []
     for row in rows:
-        rid = row["restructure_id"]
-
-        ar_exists = conn.execute(
-            """
-            SELECT 1 FROM ar_subledger
-            WHERE reference_id = ?
-              AND reference_type = 'RESTRUCTURE'
-              AND transaction_type = 'RESTRUCTURE_REVERSAL'
-            LIMIT 1
-            """,
-            (rid,),
-        ).fetchone() is not None
-
-        gl_exists = conn.execute(
-            """
-            SELECT 1 FROM gl_journal_entries
-            WHERE reference_id = ?
-              AND reference_type = 'RESTRUCTURE'
-              AND entry_type = 'RESTRUCTURE_REVERSAL'
-            LIMIT 1
-            """,
-            (rid,),
-        ).fetchone() is not None
-
-        # Only report if at least one side is discrepant
-        # (both present = clean; both absent = systemic failure — still reported)
-        if ar_exists and gl_exists:
-            continue  # fully reconciled
-
         findings.append(
             RestructuredFinding(
-                restructure_id=rid,
+                restructure_id=row["restructure_id"],
                 loan_id=row["loan_id"],
                 original_due_date=row["original_due_date"],
                 restructured_due_date=row["restructured_due_date"],
                 original_amount=float(row["original_amount"]),
                 restructured_amount=float(row["restructured_amount"]),
-                missing_in_ar=not ar_exists,
-                missing_in_gl=not gl_exists,
+                missing_in_ar=not row["ar_exists"],
+                missing_in_gl=not row["gl_exists"],
                 finding_type="removed_from_period",
             )
         )
@@ -134,54 +116,38 @@ def find_restructures_added_to_period(
             rp.original_due_date,
             rp.restructured_due_date,
             rp.original_amount,
-            rp.restructured_amount
+            rp.restructured_amount,
+            CASE WHEN ar.reference_id IS NOT NULL THEN 1 ELSE 0 END AS ar_exists,
+            CASE WHEN gl.reference_id IS NOT NULL THEN 1 ELSE 0 END AS gl_exists
         FROM restructured_payments rp
+        LEFT JOIN ar_subledger ar
+            ON ar.reference_id = rp.restructure_id
+           AND ar.reference_type = 'RESTRUCTURE'
+           AND ar.transaction_type = 'RESTRUCTURE_ADDITION'
+        LEFT JOIN gl_journal_entries gl
+            ON gl.reference_id = rp.restructure_id
+           AND gl.reference_type = 'RESTRUCTURE'
+           AND gl.entry_type = 'RESTRUCTURE_ADDITION'
         WHERE rp.restructured_due_date >= ?
           AND rp.restructured_due_date < ?
           AND rp.original_due_date < ?
+          AND NOT (ar.reference_id IS NOT NULL AND gl.reference_id IS NOT NULL)
         """,
         (period_start, next_month, period_start),
     ).fetchall()
 
     findings: List[RestructuredFinding] = []
     for row in rows:
-        rid = row["restructure_id"]
-
-        ar_exists = conn.execute(
-            """
-            SELECT 1 FROM ar_subledger
-            WHERE reference_id = ?
-              AND reference_type = 'RESTRUCTURE'
-              AND transaction_type = 'RESTRUCTURE_ADDITION'
-            LIMIT 1
-            """,
-            (rid,),
-        ).fetchone() is not None
-
-        gl_exists = conn.execute(
-            """
-            SELECT 1 FROM gl_journal_entries
-            WHERE reference_id = ?
-              AND reference_type = 'RESTRUCTURE'
-              AND entry_type = 'RESTRUCTURE_ADDITION'
-            LIMIT 1
-            """,
-            (rid,),
-        ).fetchone() is not None
-
-        if ar_exists and gl_exists:
-            continue  # fully reconciled
-
         findings.append(
             RestructuredFinding(
-                restructure_id=rid,
+                restructure_id=row["restructure_id"],
                 loan_id=row["loan_id"],
                 original_due_date=row["original_due_date"],
                 restructured_due_date=row["restructured_due_date"],
                 original_amount=float(row["original_amount"]),
                 restructured_amount=float(row["restructured_amount"]),
-                missing_in_ar=not ar_exists,
-                missing_in_gl=not gl_exists,
+                missing_in_ar=not row["ar_exists"],
+                missing_in_gl=not row["gl_exists"],
                 finding_type="added_to_period",
             )
         )
